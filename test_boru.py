@@ -259,6 +259,19 @@ class PaperTests(unittest.TestCase):
             finally:
                 restored.close()
 
+    def test_expired_entry_deadline_overrides_entry_flag_during_fetch(self):
+        class Feed:
+            def tickers(self):
+                return {"btc_tl":{"volume_24h_tl":10000000,"last":100}}
+            def book(self,market):
+                return book(now=1020)
+        self.sim.feed=Feed()
+        with patch("boru.time.time",return_value=1020),patch("builtins.print"):
+            result=self.sim.cycle(allow_entries=True,entry_deadline=1010)
+        self.assertFalse(result["entries_open"])
+        self.assertEqual(result["trade_events"],0)
+        self.assertEqual(self.sim.db.execute("SELECT reason FROM decisions ORDER BY rowid DESC LIMIT 1").fetchone()[0],"ENTRY_WINDOW_CLOSED")
+
 
 if __name__ == "__main__":
     unittest.main()

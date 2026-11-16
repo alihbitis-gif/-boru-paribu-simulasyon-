@@ -378,7 +378,7 @@ class Simulation:
                 remaining -= (before-self.cash())*stress
                 slots -= 1
 
-    def cycle(self, allow_entries=True):
+    def cycle(self, allow_entries=True, entry_deadline=None):
         self.entries_open = allow_entries
         errors,tickers = [],{}
         try:
@@ -400,6 +400,9 @@ class Simulation:
                 except Exception as exc:
                     errors.append(market+": "+type(exc).__name__+": "+str(exc)[:120])
         now = time.time()
+        if entry_deadline is not None and now >= entry_deadline:
+            allow_entries = False
+            self.entries_open = False
         for market in list(books):
             if not -5 <= now-books[market]["timestamp"] <= 30:
                 del books[market]
@@ -524,6 +527,7 @@ def main():
         life['monitor_deadline'] = time.time()+args.resume_monitor_minutes*60
     with sim.db:
         sim.db.execute("INSERT OR REPLACE INTO settings VALUES('lifecycle',?)", (json.dumps(life),))
+    (sim.directory/"session_end.json").unlink(missing_ok=True)
     def stop(*_):
         nonlocal stopping
         stopping = True
@@ -537,7 +541,7 @@ def main():
             if phase in ("COMPLETE","PAUSED_OPEN_POSITIONS"):
                 finish = phase
                 break
-            report = sim.cycle(allow_entries=phase=="ENTRY")
+            report = sim.cycle(allow_entries=phase=="ENTRY",entry_deadline=life["entry_deadline"])
             count += 1
             valid += int(report["valid_books"] > 0)
             if args.cycles and count >= args.cycles:

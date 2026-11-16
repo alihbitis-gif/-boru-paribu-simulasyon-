@@ -52,10 +52,11 @@ async function publish({readiness=false}={}){
   const index=JSON.parse(await fs.readFile(path.join(out,'index.json'),'utf8'));
   if(!readiness && index.trades.length<=announced) return;
   const name=`boru-graphics-${process.env.GITHUB_RUN_ID}-${index.session_id}-${index.trades.length}-${Date.now()}`;
-  const files=(await fs.readdir(out)).filter(n=>/\.(png|md|json)$/.test(n)).map(n=>path.join(out,n));
-  for(const name of ['status.json','session_end.json','report_delivery.json']){
+  const metadata=['status.json','session_end.json','report_delivery.json'];
+  const files=(await fs.readdir(out)).filter(n=>/\.(png|md|json)$/.test(n) && !metadata.includes(n)).map(n=>path.join(out,n));
+  for(const name of metadata){
     try{await fs.copyFile(path.resolve('data',name),path.join(out,name)); files.push(path.join(out,name));}
-    catch(e){if(e.code!=='ENOENT') throw e;}
+    catch(e){if(e.code!=='ENOENT') throw e; await fs.rm(path.join(out,name),{force:true});}
   }
   const uniqueFiles=[...new Set(files)];
   const result=await artifact.uploadArtifact(name,uniqueFiles,out,{retentionDays:30});
