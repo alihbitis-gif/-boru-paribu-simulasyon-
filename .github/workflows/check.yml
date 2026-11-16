@@ -25,3 +25,5 @@ jobs:
           assert len(book['bids']) > 0 and len(book['asks']) > 0
           print('Public ticker last-price and order book verified; no paper account created.')
           PYCODE
+      - name: Discover public candles and chain data contracts
+        run: python probe_feeds.py
