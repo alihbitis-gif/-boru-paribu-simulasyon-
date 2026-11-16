@@ -10,7 +10,7 @@ import sqlite3
 from zoneinfo import ZoneInfo
 
 TZ = ZoneInfo('Europe/Istanbul')
-FEE = .0035
+LEGACY_FEE = .0035
 
 
 def money(v):
@@ -31,18 +31,27 @@ def records(db):
     """Replay cost basis and cash exactly, including partial sells."""
     db.row_factory = sqlite3.Row
     cash, realized, holdings, result = 20000., 0., {}, []
+    has_fills = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fills'").fetchone()
     for row in db.execute('SELECT * FROM trades ORDER BY id'):
         t = dict(row)
-        m, qty, gross = t['market'], t['qty'], t['qty']*t['price']
+        fill = db.execute('SELECT * FROM fills WHERE trade_id=?',(t['id'],)).fetchone() if has_fills else None
+        rate = fill['fee_rate'] if fill else LEGACY_FEE
+        m, qty = t['market'], t['qty']
+        gross = fill['notional'] if fill else qty*t['price']
+        gross_qty = fill['gross_qty'] if fill else qty
+        fee_currency = fill['fee_currency'] if fill else 'TL'
+        fee_quantity = fill['fee_quantity'] if fill else t['fee']
         if t['side'] == 'BUY':
             if m in holdings:
                 raise ValueError('Unexpected overlapping position')
-            cost = gross+t['fee']
+            cost = gross if fill else gross+t['fee']
             cash -= cost
             holdings[m] = dict(qty=qty, cost=cost, entry_ts=t['ts'], entry_price=t['price'])
             unit_cost, entry_ts, entry_price, return_pct = cost/qty, t['ts'], t['price'], None
             signal = json.loads(t['reason'])
-            reason = ('EMA10 > EMA30; 20 dakikalık zirve kırılımı; RSI ve oynaklık filtreleri; pozitif momentum.')
+            reason = ('Alış fiyatı tarafında tamponlu kırılım; değişen son işlem fiyatıyla teyit; '
+                      '5 dakikalık eğilim, RSI ve oynaklık filtreleri; risk ve maliyet bütçesi.' if fill else
+                      'EMA10 > EMA30; 20 dakikalık orta fiyat zirve kırılımı; RSI ve oynaklık filtreleri; pozitif momentum.')
         else:
             p = holdings[m]
             if qty > p['qty']+1e-9:
@@ -64,10 +73,14 @@ def records(db):
                  realized_total_tl=realized, allocated_cost_tl=cost, net_return_pct=return_pct,
                  notional_tl=gross, reason_tr=reason, indicators=signal,
                  entry_ts=entry_ts, entry_price=entry_price,
-                 stop_reference_price=unit_cost*.98/(1-FEE),
-                 target_reference_price=unit_cost*1.03/(1-FEE),
+                 stop_reference_price=unit_cost*.98/(1-rate),
+                 target_reference_price=unit_cost*1.03/(1-rate),
                  remaining_qty=holdings.get(m, {}).get('qty', 0),
-                 mode='PAPER_ONLY', assumed_fee_each_side=FEE)
+                 mode='PAPER_ONLY', assumed_fee_each_side=rate,
+                 fee_currency=fee_currency,fee_quantity=fee_quantity,gross_quantity=gross_qty,
+                 net_acquired_quantity=qty if t['side']=='BUY' else None,
+                 strategy_version='2.0' if fill else '1.0',
+                 data_source='sampled_public_quotes_and_last_price' if fill else 'sampled_public_quotes')
         result.append(t)
     return result
 
@@ -96,6 +109,10 @@ def chart(db, trade, history, path):
         ax.fill_between(times,[r[1] for r in ticks],[r[2] for r in ticks],color='#2558a1',alpha=.12,label='Alış–satış farkı')
     else:
         ax.text(.02,.92,'Bu aralıkta kaydedilmiş fiyat serisi yok.',transform=ax.transAxes)
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ticker_observations'").fetchone():
+        observed = db.execute('SELECT received,last FROM ticker_observations WHERE market=? AND received>=? AND received<=? ORDER BY received',(market,start,ts)).fetchall()
+        if observed:
+            ax.plot([local(r[0]) for r in observed],[r[1] for r in observed],color='#a46716',lw=1,label='Örneklenen son işlem fiyatı')
     ax.axhline(trade['stop_reference_price'],color='#c23d4b',ls='--',lw=1,label='−%2 net zarar kes referansı')
     ax.axhline(trade['target_reference_price'],color='#16816b',ls='--',lw=1,label='+%3 net kâr al referansı')
     if trade['side']=='SELL':
@@ -112,12 +129,13 @@ def chart(db, trade, history, path):
     balance.axhline(0,color='#8997a7',lw=.8)
     balance.set_title('Birikimli gerçekleşmiş kâr / zarar',loc='left',fontsize=12)
     balance.set_ylabel('TL'); balance.grid(alpha=.16)
-    balance.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M',tz=TZ))
+    balance.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=3,maxticks=5))
+    balance.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S' if ts-prior[0]['ts']<300 else '%H:%M',tz=TZ))
     foot = fig.add_subplot(grid[3]); foot.axis('off')
     pnl = 'Pozisyon açıldı; satış sonucu henüz yok.' if side=='ALIŞ' else f'Bu satış: {money(trade["pnl"])}  /  %{trade["net_return_pct"]:.2f}'
-    text = (f'Gerçekleşme: {trade["price"]:.8g} TL × {trade["qty"]:.8g}    |    Komisyon: {money(trade["fee"])}\n'
+    text = (f'Gerçekleşme: {trade["price"]:.8g} TL × {trade["gross_quantity"]:.8g}    |    Komisyon: {money(trade["fee"])} karşılığı\n'
             f'{pnl}\nKalan nakit: {money(trade["cash_after_tl"])}    |    Birikimli gerçekleşmiş sonuç: {money(trade["realized_total_tl"])}\n'
-            'Her yön için %0,35 komisyon varsayımı. Grafik işlem bazlı mum değil, kaydedilmiş fiyat gözlemleridir.\n'
+            f'Her yön için %{trade["assumed_fee_each_side"]*100:g} varsayım; kesinti: {trade["fee_quantity"]:.8g} {trade["fee_currency"]}. Tam işlem mumu/hacmi değildir.\n'
             'Kesikli seviyeler net getiri referansıdır; derinlik ve gecikme nedeniyle gerçekleşme değişebilir.')
     foot.text(0,.96,text,va='top',fontsize=10,linespacing=1.65,color='#33465b')
     fig.savefig(path,dpi=150)
@@ -143,18 +161,21 @@ def generate(directory, output=None):
             atomic_json(paths['json'],trade)
             side = 'ALIŞ' if trade['side']=='BUY' else 'SATIŞ'
             pnl = 'Henüz satış gerçekleşmedi.' if side=='ALIŞ' else f'{money(trade["pnl"])} (%{trade["net_return_pct"]:.2f})'
-            text = (f'# BÖRÜ — {market_label(trade)} {side}\n\n'
+            text = (f'# SANAL İŞLEM — BÖRÜ {market_label(trade)} {side}\n\n'
                     f'**Sanal işlem.** {trade["timestamp_local"]}\n\n'
                     f'![İşlem grafiği]({paths["png"].name})\n\n'
                     f'| Alan | Değer |\n|---|---|\n| İşlem kimliği | {ident} |\n'
-                    f'| Fiyat | {trade["price"]:.8g} TL |\n| Miktar | {trade["qty"]:.8g} |\n'
-                    f'| İşlem tutarı | {money(trade["notional_tl"])} |\n| Komisyon | {money(trade["fee"])} |\n'
+                    f'| Fiyat | {trade["price"]:.8g} TL |\n| Brüt işlem miktarı | {trade["gross_quantity"]:.8g} |\n'
+                    f'| Net alınan miktar | {trade["net_acquired_quantity"] if side=="ALIŞ" else "—"} |\n'
+                    f'| İşlem tutarı | {money(trade["notional_tl"])} |\n| Komisyon TL karşılığı | {money(trade["fee"])} |\n'
+                    f'| Komisyon kesintisi | {trade["fee_quantity"]:.8g} {trade["fee_currency"]} |\n'
                     f'| Bu satışın net sonucu | {pnl} |\n| Kalan nakit | {money(trade["cash_after_tl"])} |\n'
                     f'| Birikimli gerçekleşmiş sonuç | {money(trade["realized_total_tl"])} |\n'
                     f'| Üründe kalan miktar | {trade["remaining_qty"]:.8g} |\n\n'
                     f'Gerekçe: {trade["reason_tr"]}\n\n'
                     f'Gösterge değerleri: {json.dumps(trade["indicators"],ensure_ascii=False)}\n\n'
-                    'Komisyon her yön için %0,35 varsayılmıştır. Kalan nakit, toplam portföy değeri değildir. '
+                    f'Komisyon her yön için %{trade["assumed_fee_each_side"]*100:g} varsayılmıştır; kişisel oran doğrulanmamıştır. '
+                    'Alışta coin olarak kesilen komisyon TL nakitten ikinci kez düşülmez. Kalan nakit, toplam portföy değeri değildir. '
                     'Grafik kayıtlı alış/satış gözlemlerini kullanır; eksik geçmiş veya işlem sonrası fiyat eklenmez.\n')
             paths['md'].write_text(text,encoding='utf-8')
         index['trades'].append({'report_id':ident,'trade_id':trade['id'],'market':trade['market'],

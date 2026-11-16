@@ -1,8 +1,6 @@
 name: BORU existing-session chart reports
 on:
-  pull_request:
-    types: [synchronize]
-    paths: ['.github/workflows/report-existing.yml']
+  workflow_dispatch:
 permissions:
   contents: read
   actions: read
@@ -12,7 +10,6 @@ concurrency:
   cancel-in-progress: false
 jobs:
   collect:
-    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 205
     steps:

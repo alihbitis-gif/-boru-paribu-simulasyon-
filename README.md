@@ -1,83 +1,105 @@
-# BÖRÜ — Paribu canlı kâğıt işlem simülasyonu
+# BÖRÜ 2.0 — Paribu sanal işlem denemesi
 
-Başlangıç **20.000 TL sanal bakiye**. Gerçek emir, hesap bağlantısı veya API anahtarı yoktur.
-Bu ileriye dönük bir denemedir; geçmiş performans testi veya doğrulanmış kazanç stratejisi değildir.
+**20.000 TL sanal sermaye; net −%2 zarar kes, +%3 kâr al.** Yalnız genel piyasa verisi okunur.
+Gerçek emir, hesap anahtarı veya para transferi yoktur. Bu sürümün kârlılığı henüz doğrulanmamıştır.
 
-## Çalıştırma
+## Neler düzeltildi?
 
-Python 3.10+ ve standart kütüphane yeterlidir.
+| Alan | 2.0 davranışı |
+|---|---|
+| Komisyon | Her yönde %0,28 standart TL taker varsayımı; alışta coin, satışta TL kesintisi |
+| Alış sinyali | Orta fiyat yerine alış teklifinin (bid) kapanışı ve zirvesi; en az %0,1 kırılım tamponu |
+| Teyit | Son işlem fiyatında yeni gözlenen değişim, kırılım seviyesinin korunması ve 5 dakikalık eğilim |
+| Piyasa yönü | Altcoin alışlarında güncel BTC/TL verisi ve pozitif 5 dakikalık eğilim |
+| Sermaye | İşlem başına %1, toplam %2 risk bütçesi; %0,5 fiyat kayması payı |
+| İşlem maliyeti | Komisyon + makas + derinlik etkisiyle hemen geri satış kaybı en fazla %0,8 |
+| Süre sonu | Yeni alışlar kapanır; açık pozisyon takibi ayrıca sürer |
+| Kısmi stop | Stop tetiklenince kalan miktarın çıkış isteği korunur; aynı defter tekrar tüketilmez |
+| Kayıt | Alış/satış/eleme gerekçesi, tüm alınan defter kademeleri, ticker örnekleri, kullanılan komisyon |
+| Rapor | Brüt miktar/net alınan miktar ve komisyon varlığı ayrı; eski raporlar kendi varsayımını korur |
+
+Bunlar deneme parametreleridir; en iyi veya kâr garantili ayarlar oldukları iddia edilmez.
+Başlangıçta tek pozisyon bütçesi `20.000 × %1 / (%2 + %0,5) = 8.000 TL`, toplam maliyet sınırı
+aynı hesapla 16.000 TL'dir. Likidite yetersizse daha az alınabilir; uygun fırsat yoksa nakitte kalınır.
+Risk bütçesi fiyat boşluğunda veya veri kesintisinde zarar için kesin bir tavan değildir.
+
+## Veri ve strateji sınırları
+
+- Yalnız `GET https://api.paribu.com/market/ticker` ve `GET /orderbook` kullanılır.
+- 24 saatlik TL hacmi 5 milyon TL üzerindeki ilk 10 TL paritesi ve BTC/TL gözlenir.
+  USDT/TL ve USDC/TL alış adayı olmaz. Açık pozisyonlar liste dışına çıksa da takip edilir.
+- Her 15 saniyelik defter örneğinden bid fiyat barları üretilir. Son işlem fiyatı ticker'dan ayrıca örneklenir.
+  **Bunlar tüm gerçekleşen işlemleri içeren OHLCV ya da dakika hacmi değildir.** 24 saatlik hacim
+  farkı dakika hacmi gibi kullanılmaz. İşlem/hacim akışı doğrulanmadan hacim teyidi var denmez.
+- En az 60 ardışık kapanmış dakika, her dakikada iki ayrı defter zamanı gerekir. Açık mum kullanılmaz.
+- EMA10 > EMA30; basit RSI14 50–75; pozitif 5 dakikalık momentum; dakika oynaklığı %0,01–%0,8.
+- Bid kapanışı önceki 20 dakikanın en yükseğini `max(%0,1, oynaklık/2)` kadar geçmelidir.
+  Güncel bid ve örneklenen son işlem fiyatı da bu seviyeyi korumalıdır. Son kapanmış dakikanın
+  başlangıcından itibaren en az iki ticker örneği ve en az bir fiyat değişimi bulunmalıdır.
+- Tamamlanmış 5 dakikalık bid barlarında EMA3 > EMA8 ve son kapanış ≥ önceki kapanış aranır.
+  Altcoinler için aynı kontrol güncel BTC/TL üzerinde de yapılır. Eksik/eskimiş teyit alış açmaz.
+- Makas en fazla %0,3; alışın kademe fiyat etkisi en fazla %0,3. Görünür miktarın en fazla %10'u kullanılır.
+  En az 1.000 TL alış, en fazla üç pozisyon ve satıştan sonra 30 dakika bekleme kuralı vardır.
+- Tam çıkış derinliği bilinmeyen açık pozisyon varsa portföy değeri `null`; yeni risk alınmaz.
+- 30 saniyeden eski defterle alış/satış yapılmaz. Eksik veri sırasında stop çalışmış sayılmaz.
+- Eski orta fiyat sinyali `shadow_signals` içinde aynı gözlemlerle karşılaştırma için kaydedilir.
+  Bu yalnız sinyal karşılaştırmasıdır; ikinci bir portföy veya kâr karşılaştırması değildir.
+
+Komisyon kaynağı (16.11.2026 kontrolü):
+https://www.paribu.com/destek/alim-satim/komisyon-maker-taker
+Standart 1. seviye TL taker %0,28'dir. Kişisel hacim seviyesi/Loyalty indirimi bilinmediği için varsayılır;
+oturum içinde kademe indirimi hesaplanmaz. Ayar `Config` içinde ve oturum veritabanında saklanır.
+Aynı oturumun oranı sessizce değiştirilemez.
+
+## Çalıştırma ve süre yönetimi
+
+Python 3.10+, Linux/macOS ve grafik için `matplotlib==3.10.8` kullanılır.
 
 ```sh
+python -m pip install matplotlib==3.10.8
 python -m unittest -v
-python -u boru.py --duration-minutes 180 --interval 15 --require-data
+python -u boru.py --directory data-v2 --duration-minutes 180 --max-monitor-minutes 120 --interval 15 --require-data
 ```
 
-GitHub Actions testleri ve üç canlı gözlemi doğrular, ardından 180 dakikalık sunucu oturumu çalıştırır.
-Bu oturum 7/24 hizmet değildir; süre sonunda durur. `boru-session-results` çıktısında SQLite işlem defteri,
-`status.json` ve zaman damgalı `reports.jsonl` bulunur. Açık pozisyonlar oturum sonunda zorla kapatılmaz.
-Yeni bağımsız Actions çalışması 20.000 TL ile yeni oturum açar; öncekinin üzerine eklenmez.
+Bu komut üç saat yeni fırsat izler. Süre sonunda pozisyon varsa **yalnız çıkış takibi** en fazla iki saat
+sürer. Pozisyon kapanınca biter. İki saatlik ek sınır da dolarsa sahte satış yapılmaz:
+`session_end.json` içinde `PAUSED_OPEN_POSITIONS`, `requires_resume: true`, `monitoring_active: false`
+yazılır; artık çalışan stop takibi yoktur. İşletim sistemi süreci zorla öldürürse son kontrol noktası kullanılır.
 
-## İlk sürümün kuralları
+Sürekli worker için `--duration-minutes 0` kullanılabilir; kalıcı disk ve tek süreç gereklidir.
+Bu kod değişikliği tek başına 7/24 sunucu kurulumu değildir. İkinci süreç aynı dizini açamaz.
 
-- Paribu `GET /market/ticker` ve `GET /orderbook` genel uçları kullanılır; yalnız bu iki GET isteğine izin verilir.
-- 24 saatlik TL hacmi en az 5 milyon TL olan en likit 10 TL paritesi izlenir; USDT/TL ve USDC/TL hariçtir.
-- Her 15 saniyede emir defterinin alış/satış orta fiyatından 1 dakikalık gözlem barları oluşturulur.
-  Bunlar işlem bazlı OHLCV değildir. Geçmiş mum veya dakika hacmi uydurulmaz.
-- Alım için en az 60 ardışık kapanmış dakika ve her dakikada en az iki farklı zaman damgalı gözlem gerekir.
-  İlk hazırlık yaklaşık 61 dakika sürer; veri boşlukları süreyi uzatabilir.
-- EMA10 > EMA30, önceki 20 dakikanın gözlenen zirvesinin kırılması, RSI14 50–75,
-  pozitif 5 dakikalık momentum ve dakika log getiri oynaklığı %0,01–%0,8 koşulları birlikte aranır.
-  RSI son 14 fiyat değişiminin basit ortalamasını kullanır.
-- Alış/satış farkı en fazla %0,3; alışın ek fiyat etkisi en fazla %0,3 olabilir.
-- En fazla üç aday momentum/oynaklık puanları oranında kullanılabilir nakdi paylaşır.
-  Tek aday bütün nakdi kullanabilir; uygun aday yoksa nakitte beklenir.
-  Görünür emir miktarının yalnız %10'u kullanılabilir; alış alt sınırı 1.000 TL'dir.
-- Her yön için **%0,35 komisyon varsayılır**. Bu kullanıcının doğrulanmış Paribu komisyon oranı değildir.
-  Gerçek emir defteri kademeleri üzerinden ağırlıklı fiyat ve gerekirse kısmi işlem hesaplanır.
-- Alış ve satış komisyonları sonrası tahmini net getiri **−%2 veya +%3** eşiğine ulaşınca satış denenir.
-  Fiyat boşluğu, 15 saniyelik kontrol aralığı, gecikme ve likidite nedeniyle sanal sonuç eşikten farklı olabilir.
-  Satış sonrası aynı üründe 30 dakika beklenir.
-- 30 saniyeden eski veya hatalı emir defteriyle işlem yapılmaz. Fiyatlanamayan pozisyon varsa toplam değer `null` olur.
-  Veri kesintisinde stop seviyesinin çalıştığı varsayılmaz. API hataları kaydedilir.
-- Kararlar ve maliyetler işlem kayıtlarına, gözlemler SQLite'a yazılır.
-  Aynı veri diziniyle yeniden başlatmak bakiyeyi sıfırlamaz.
-
-## Kalıcı sunucu
-
-Sürekli çalışma komutu: `python -u boru.py --duration-minutes 0 --interval 15`.
-`BORU_DATA_DIR` kalıcı diskteki dizini göstermeli; tek çalışan süreç kullanılmalıdır.
-Render üzerinde sürekli worker ve kalıcı disk ayrıca kurulmalıdır. Actions oturumu Render kurulumu anlamına gelmez.
-
-## Veri belgeleri
-
-- https://docs.paribu.com/api/market-data/ticker
-- https://docs.paribu.com/api/market-data/orderbook
-
-Bu ilk sürümün varsayımları gerçek ileriye dönük kayıtlarla değerlendirilecektir.
-Az işlem, sıfır işlem veya kısa dönem kârı stratejinin başarısını kanıtlamaz.
-
-## İşlem başına grafikli raporlar
-
-`reporting.py` işlem defterindeki her alış ve her kısmi/tam satış için ayrı PNG, Markdown ve JSON üretir.
-Grafiklerde gözlenen fiyat serisi, sanal alış/satış noktaları, komisyon sonrası −%2/+%3 fiyat referansları
-ve birikimli gerçekleşmiş kâr/zarar bulunur. Nakit, miktar, komisyon ve gerekçe de ayrı yazılır.
-Alış sırasında henüz kazanılmamış bir kâr gösterilmez; işlem sonrası fiyatlar geçmiş rapora eklenmez.
+Aynı v2 diziniyle yeniden başlatma bakiyeyi veya alış penceresini sıfırlamaz. Açık pozisyonlu duraklamayı
+sürdürmek için indirilen kontrol noktası tek bir veri dizinine konur ve örneğin:
 
 ```sh
-python reporting.py --directory data
+python -u boru.py --directory restored-v2 --resume-monitor-minutes 120 --interval 15
 ```
 
-16 Kasım 2026'da başlamış `43849993630` numaralı ilk oturum değiştirilmeden çalışmaya devam eder.
-`BORU existing-session chart reports` işi bu oturumun bitmesini bekler ve işlem defteri erişilebilir
-olduğunda tüm işlemleri ayrı raporlar. İlk oturumda raporlar işlem anında değil, oturum bitiminde hazırlanır.
+Bu komut yalnız v2 oturumunun bitmiş alış penceresi için izleme süresini uzatır; yeni alışları açmaz.
+1.0 veritabanı 2.0 ile işlem yapmak üzere açılmaz. Önceki sonuçlar değişmeden raporlanabilir.
 
-Sonraki oturumlarda `BORU_GRAPH_REPORTS=1` ile kaydedilen yeni işlemlerden sonra rapor üretilir.
-Özel raporlama eylemi raporları kimlik doğrulaması gerektiren GitHub Actions çıktılarına yükler.
-Her yeni çıktı bütün önceki işlem raporlarını içerir; en son iki tam paket saklanır.
-PR #1'e yalnız raporun hazır olduğunu belirten teknik bildirim ve çıktı bağlantısı yazılır.
-Grafik ve ayrıntılı rapor dosyaları kaynak kod deposuna eklenmez.
-ChatGPT bildirimi bu rapor-hazır olayından tetiklenir; üretim ve iletim gecikmesi olabilir.
+## GitHub Actions ve raporlar
 
-Yanlışlıkla yeni 3 saatlik oturum açmamak için normal kod değişiklikleri simülasyonu başlatmaz.
-Yeni oturum için `.github/start-paper-session` dosyası bilerek değiştirilmelidir.
-İlk oturumu raporlayan ayrı iş, yeni bir alım-satım simülasyonu başlatmaz.
+- Olağan kod değişikliği yeni simülasyon başlatmaz. PR senkronizasyonundaki **yalnız yeni değişiklik**
+  `.github/start-paper-session` dosyasını içeriyorsa başlatılır; PR'nin birikimli dosya listesine güvenilmez.
+- `BORU live paper simulation` yeni oturumda önce testleri ve üç gözlemi kontrol eder.
+  Sonra yukarıdaki 180 + en çok 120 dakikalık deneme çalışır; sınır 320 dakikadır.
+- Her beş dakikada tutarlı SQLite yedeği `boru-checkpoint-*` çıktısına kaydedilir; son iki yedek tutulur.
+  Son işlem defteri `boru-session-results` çıktısındadır. Çıktıların saklama süresi 30 gündür.
+- Kayıtlar oturum boyunca silinmez. Sürekli sunucuda disk kapasitesi ve arşivleme ayrıca yönetilmelidir.
+- Her alış/kısmi veya tam satış için ayrı PNG, JSON, Markdown hazırlanır. `index.json` bütün raporları listeler.
+  Rapor; fiyat gözlemleri, işlem noktaları, net −%2/+%3 referansları ve gerçekleşmiş kâr/zararı gösterir.
+- Yükleme veya olay yazma başarısızsa yeni işlem beklenmeden sonraki gözlemlerde yeniden denenir.
+  `report_delivery.json` yükleme/olay durumunu gösterir; ChatGPT teslimi doğrulanmış sayılmaz.
+- PR #1'e teknik rapor-hazır olayı yazılması mevcut bildirim akışını uyandırır. Bildirim anlık garanti edilmez.
+  Tekrarlar rapor kimliğiyle elenir; her rapor kendi komisyonunu ve sürümünü taşır.
+- İlk `43849993630` oturumu 16.11.2026'da tamamlandı; raporları **oturum sonunda** topluca üretildi.
+  Eski %0,35 maliyet modeli ve gerçekleşen işlemleri yeniden fiyatlanmaz.
+
+```sh
+python reporting.py --directory data-v2
+```
+
+Bir işlemden strateji başarısı çıkarılmaz. Yeni kuralların etkisi birden çok bağımsız oturumda;
+net sonuç, maliyet, düşüş, elenen sinyaller ve veri kesintileri birlikte incelenerek ölçülmelidir.

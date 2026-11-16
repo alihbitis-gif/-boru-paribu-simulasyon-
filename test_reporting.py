@@ -2,7 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from boru import Simulation
+from boru import Simulation,FEE
 from test_boru import book
 from reporting import generate,records
 
@@ -13,7 +13,7 @@ class ReportTests(unittest.TestCase):
         self.sim=Simulation(self.tmp.name)
 
     def tearDown(self):
-        self.sim.db.close()
+        self.sim.close()
         self.tmp.cleanup()
 
     def seed(self):
@@ -31,11 +31,11 @@ class ReportTests(unittest.TestCase):
         self.assertAlmostEqual(r[-1]['cash_after_tl'],self.sim.cash())
         self.assertAlmostEqual(r[-1]['realized_total_tl'],self.sim.db.execute('SELECT realized FROM account').fetchone()[0])
         self.assertGreater(r[-1]['net_return_pct'],3)
-        self.assertAlmostEqual(r[0]['stop_reference_price'],100*1.0035*.98/.9965)
+        self.assertAlmostEqual(r[0]['stop_reference_price'],100*.98/(1-FEE)**2)
 
     def test_partial_sell_replay(self):
         self.sim.buy('btc_tl',book(),10000,1000,{})
-        self.sim.sell(self.sim.positions()[0],book(bid=90,ask=90.1,quantity=10),1020)
+        self.sim.sell(self.sim.positions()[0],book(bid=90,ask=90.1,quantity=10,now=1020),1020)
         self.sim.db.commit()
         r=records(self.sim.db)
         self.assertAlmostEqual(r[-1]['remaining_qty'],self.sim.positions()[0][1])
@@ -59,6 +59,28 @@ class ReportTests(unittest.TestCase):
         report=json.loads((output/idx['trades'][1]['json']).read_text())
         self.assertEqual(report['mode'],'PAPER_ONLY')
         self.assertTrue(report['timestamp_local'].endswith('+03:00'))
+
+    def test_legacy_cash_fee_reports_keep_the_original_assumption(self):
+        import sqlite3
+        db=sqlite3.connect(':memory:')
+        db.execute('CREATE TABLE trades (id INTEGER PRIMARY KEY,ts REAL,market TEXT,side TEXT,qty REAL,price REAL,fee REAL,pnl REAL,reason TEXT)')
+        qty=10000/1.0035/100
+        db.execute('INSERT INTO trades VALUES(1,1000,"trx_tl","BUY",?,?,?,0,?)',(qty,100,qty*100*.0035,'{}'))
+        report=records(db)[0]
+        self.assertEqual(report['assumed_fee_each_side'],.0035)
+        self.assertEqual(report['strategy_version'],'1.0')
+        self.assertAlmostEqual(report['cash_after_tl'],10000)
+        self.assertAlmostEqual(report['stop_reference_price'],100*1.0035*.98/.9965)
+        db.close()
+
+    def test_v2_gross_and_net_quantity_are_separate(self):
+        self.seed()
+        report=records(self.sim.db)[0]
+        self.assertAlmostEqual(report['notional_tl'],10000)
+        self.assertAlmostEqual(report['gross_quantity'],100)
+        self.assertAlmostEqual(report['net_acquired_quantity'],100*(1-FEE))
+        self.assertEqual(report['fee_currency'],'BTC')
+        self.assertAlmostEqual(report['fee_quantity'],100*FEE)
 
 
 if __name__=='__main__':

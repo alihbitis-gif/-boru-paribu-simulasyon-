@@ -12,3 +12,16 @@ jobs:
       - uses: actions/checkout@v4
       - run: python -m pip install matplotlib==3.10.8
       - run: python -m unittest -v
+      - name: Check report publisher syntax
+        run: node --check .github/actions/trade-reports/run.mjs
+      - name: Verify public feed contract without opening a simulation
+        run: |
+          python - <<'PYCODE'
+          from boru import MarketData
+          feed = MarketData()
+          tickers = feed.tickers()
+          book = feed.book('btc_tl')
+          assert tickers['btc_tl']['last'] > 0
+          assert len(book['bids']) > 0 and len(book['asks']) > 0
+          print('Public ticker last-price and order book verified; no paper account created.')
+          PYCODE
