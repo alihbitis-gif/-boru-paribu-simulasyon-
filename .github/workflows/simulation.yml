@@ -47,8 +47,22 @@ jobs:
       - run: python -m pip install matplotlib==3.10.8
       - name: Test accounting and execution safeguards
         run: python -m unittest -v
-      - name: Verify live Paribu data with three observations
-        run: python -u boru.py --directory data --cycles 3 --interval 15 --max-monitor-minutes 120 --require-data
+      - name: Verify live public data without creating a trading account
+        run: |
+          python - <<'PYCODE'
+          import json
+          from pathlib import Path
+          from boru import MarketData,utc
+          feed=MarketData()
+          tickers=feed.tickers()
+          book=feed.book('btc_tl')
+          Path('data').mkdir(exist_ok=True)
+          report={'mode':'DATA_PREFLIGHT_ONLY','timestamp_utc':utc(),'tl_markets':len(tickers),'valid_btc_book':bool(book['bids'])}
+          Path('data/preflight.json').write_text(json.dumps(report,indent=2))
+          print(json.dumps(report),flush=True)
+          PYCODE
+      - name: Verify candle and chain sources
+        run: python probe_feeds.py
       - uses: actions/upload-artifact@v4
         with:
           name: boru-initial-state

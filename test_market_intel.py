@@ -98,6 +98,7 @@ class MarketIntelTests(unittest.TestCase):
         self.assertEqual(exit_decision(.018,.03,context()),(True,'TRAILING_PROFIT'))
         self.assertEqual(exit_decision(-.06,0,{}),(True,'HARD_RISK_EXIT'))
         self.assertEqual(exit_decision(-.025,0,{}),(True,'LOSS_EXIT_DATA_UNCONFIRMED'))
+        self.assertEqual(exit_decision(.02,.05,{}),(True,'PROFIT_PROTECTION_DATA_STALE'))
 
     def test_v3_cycle_monitors_every_tl_symbol_and_saves_research(self):
         class Research:
@@ -142,6 +143,28 @@ class MarketIntelTests(unittest.TestCase):
                 self.assertEqual(sim.positions(),[])
                 row=sim.db.execute('SELECT payload FROM execution_context ORDER BY trade_id DESC LIMIT 1').fetchone()
                 self.assertEqual(json.loads(row[0])['decision'],'HARD_RISK_EXIT')
+            finally:sim.close()
+
+    def test_v3_graph_and_report_preserve_currency_and_review_labels(self):
+        from pathlib import Path
+        from reporting import generate
+        with tempfile.TemporaryDirectory() as d:
+            sim=Simulation(d)
+            try:
+                for i in range(48):
+                    t=1800000000-48*3600+i*3600
+                    b={'time':t,'end':t+3599.999,'open':100+i*.1,'high':101+i*.1,'low':99+i*.1,'close':100.5+i*.1,'volume':10}
+                    sim.db.execute('INSERT INTO candles VALUES(?,?,?,?,?)',('eth_tl','Binance','1h',t,json.dumps(b)))
+                sim.record_book('eth_tl',book(now=1800000000),1800000000)
+                sim.buy('eth_tl',book(now=1800000000),3000,1800000000,{'decision':'MULTITIMEFRAME_TREND','research':context()})
+                sim.db.commit()
+                idx=generate(d)
+                report=json.loads((Path(d)/'trade_reports'/idx['trades'][0]['json']).read_text())
+                self.assertEqual(report['strategy_version'],'3.0')
+                self.assertEqual(report['threshold_mode'],'REVIEW_POINTS')
+                self.assertEqual(report['hard_stop_net_return'],-.05)
+                self.assertIsNone(report['net_return_pct'])
+                self.assertEqual((Path(d)/'trade_reports'/idx['trades'][0]['png']).read_bytes()[:8],b'\x89PNG\r\n\x1a\n')
             finally:sim.close()
 
 

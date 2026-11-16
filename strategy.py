@@ -37,6 +37,8 @@ def entry_decision(context,rebound):
 def exit_decision(net_return,peak,context,hard_stop=-.05):
     if net_return<=hard_stop:return True,'HARD_RISK_EXIT'
     if not context.get('fresh') or not context.get('identity_verified'):
+        if net_return>0 and peak>=.005 and peak-net_return>=.01:
+            return True,'PROFIT_PROTECTION_DATA_STALE'
         return (True,'LOSS_EXIT_DATA_UNCONFIRMED') if net_return<=-.02 else (False,'WAIT_FOR_RESEARCH')
     m=context['metrics'];p=m['patterns']
     large_buy,_=flow(context)
@@ -64,6 +66,7 @@ REASONS_TR={
  'LOSS_EXIT_DATA_UNCONFIRMED':'Net zarar %2 inceleme seviyesinde; gerekli güncel araştırma verisi doğrulanamadı.',
  'LOSS_EXIT_CHAIN_UNCONFIRMED':'Net zarar %2 inceleme seviyesinde; ilgili varlık için güncel zincir teyidi yok.',
  'LOSS_EXIT_RESEARCH_WEAK':'Mum, eğilim veya büyük işlem verisi toparlanmayı desteklemiyor.',
+ 'PROFIT_PROTECTION_DATA_STALE':'Araştırma verisi yenilenemedi; kaydedilmiş kâr zirvesinden geri çekilmede koruyucu çıkış.',
  'TRAILING_PROFIT':'Görülen kâr zirvesinden oynaklığa göre belirlenen geri çekilme oluştu.',
  'LARGE_BUY_COUNTERTRADE_PROFIT':'Büyük alış gözlemine karşı, eldeki sanal pozisyonda net kâr alındı.',
  'EARLY_PROFIT_WEAKENING':'Mum/eğilim zayıfladığı için %3 beklenmeden net kâr alındı.',
