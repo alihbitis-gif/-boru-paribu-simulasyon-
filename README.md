@@ -55,3 +55,29 @@ Render üzerinde sürekli worker ve kalıcı disk ayrıca kurulmalıdır. Action
 
 Bu ilk sürümün varsayımları gerçek ileriye dönük kayıtlarla değerlendirilecektir.
 Az işlem, sıfır işlem veya kısa dönem kârı stratejinin başarısını kanıtlamaz.
+
+## İşlem başına grafikli raporlar
+
+`reporting.py` işlem defterindeki her alış ve her kısmi/tam satış için ayrı PNG, Markdown ve JSON üretir.
+Grafiklerde gözlenen fiyat serisi, sanal alış/satış noktaları, komisyon sonrası −%2/+%3 fiyat referansları
+ve birikimli gerçekleşmiş kâr/zarar bulunur. Nakit, miktar, komisyon ve gerekçe de ayrı yazılır.
+Alış sırasında henüz kazanılmamış bir kâr gösterilmez; işlem sonrası fiyatlar geçmiş rapora eklenmez.
+
+```sh
+python reporting.py --directory data
+```
+
+16 Kasım 2026'da başlamış `43849993630` numaralı ilk oturum değiştirilmeden çalışmaya devam eder.
+`BORU existing-session chart reports` işi bu oturumun bitmesini bekler ve işlem defteri erişilebilir
+olduğunda tüm işlemleri ayrı raporlar. İlk oturumda raporlar işlem anında değil, oturum bitiminde hazırlanır.
+
+Sonraki oturumlarda `BORU_GRAPH_REPORTS=1` ile kaydedilen yeni işlemlerden sonra rapor üretilir.
+Özel raporlama eylemi raporları kimlik doğrulaması gerektiren GitHub Actions çıktılarına yükler.
+Her yeni çıktı bütün önceki işlem raporlarını içerir; en son iki tam paket saklanır.
+PR #1'e yalnız raporun hazır olduğunu belirten teknik bildirim ve çıktı bağlantısı yazılır.
+Grafik ve ayrıntılı rapor dosyaları kaynak kod deposuna eklenmez.
+ChatGPT bildirimi bu rapor-hazır olayından tetiklenir; üretim ve iletim gecikmesi olabilir.
+
+Yanlışlıkla yeni 3 saatlik oturum açmamak için normal kod değişiklikleri simülasyonu başlatmaz.
+Yeni oturum için `.github/start-paper-session` dosyası bilerek değiştirilmelidir.
+İlk oturumu raporlayan ayrı iş, yeni bir alım-satım simülasyonu başlatmaz.

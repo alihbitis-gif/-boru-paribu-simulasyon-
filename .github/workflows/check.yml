@@ -1,5 +1,7 @@
 name: Paper simulation checks
-on: [pull_request]
+on:
+  pull_request:
+    paths: ['*.py', '.github/actions/**', '.github/workflows/**']
 permissions:
   contents: read
 jobs:
@@ -8,4 +10,5 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+      - run: python -m pip install matplotlib==3.10.8
       - run: python -m unittest -v

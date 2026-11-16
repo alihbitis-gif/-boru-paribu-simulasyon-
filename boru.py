@@ -146,6 +146,7 @@ class Simulation:
         self.db.execute("INSERT OR IGNORE INTO settings VALUES('started',?)",(utc(),))
         self.db.commit()
         self.feed = feed or MarketData()
+        self._reported_count = 0
 
     def cash(self):
         return self.db.execute("SELECT cash FROM account WHERE id=1").fetchone()[0]
@@ -256,6 +257,15 @@ class Simulation:
         with (self.directory/"reports.jsonl").open("a",encoding="utf-8") as handle:
             handle.write(json.dumps(report,ensure_ascii=False)+"\n")
         print(json.dumps(report,ensure_ascii=False),flush=True)
+        if os.environ.get('BORU_GRAPH_REPORTS') == '1' and report['trade_events'] > self._reported_count:
+            try:
+                from reporting import generate
+                index = generate(self.directory)
+                self._reported_count = len(index['trades'])
+                print('BORU_REPORTS_READY ' + json.dumps({'session_id':index['session_id'],'count':self._reported_count}),flush=True)
+            except Exception as exc:
+                # Report failure must not stop position management; retry next cycle.
+                print('REPORT_ERROR ' + type(exc).__name__ + ': ' + str(exc)[:150],flush=True)
         return report
 
     def report(self, now, books, errors, eligible):

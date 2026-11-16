@@ -2,19 +2,23 @@ name: BORU live paper simulation
 on:
   pull_request:
     types: [synchronize]
-    paths: [boru.py, test_boru.py, '.github/workflows/simulation.yml']
+    paths: ['.github/start-paper-session']
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
+  pull-requests: write
 concurrency:
   group: boru-live-paper
   cancel-in-progress: false
 jobs:
   verify:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+      - run: python -m pip install matplotlib==3.10.8
       - name: Test accounting and execution safeguards
         run: python -m unittest -v
       - name: Verify live Paribu data with three observations
@@ -34,8 +38,15 @@ jobs:
         with:
           name: boru-initial-state
           path: data
-      - name: Run 180 minute live paper session
-        run: python -u boru.py --directory data --duration-minutes 180 --interval 15 --require-data
+      - run: python -m pip install matplotlib==3.10.8
+      - run: npm install --prefix .github/actions/trade-reports --ignore-scripts --no-audit --no-fund
+      - name: Run live paper session with per-trade charts
+        uses: ./.github/actions/trade-reports
+        with:
+          mode: simulate
+          pr-number: '1'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - name: Save simulation ledger and reports
         if: always()
         uses: actions/upload-artifact@v4

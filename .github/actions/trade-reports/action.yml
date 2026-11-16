@@ -1,0 +1,15 @@
+name: BÖRÜ grafik raporları
+description: Upload authenticated chart artifacts and emit report-ready events
+inputs:
+  mode:
+    description: simulate or collect
+    required: true
+  source-run:
+    description: Existing run to collect without restarting it
+    required: false
+  pr-number:
+    description: The owner's BÖRÜ pull request for neutral event markers
+    required: true
+runs:
+  using: node24
+  main: run.mjs
