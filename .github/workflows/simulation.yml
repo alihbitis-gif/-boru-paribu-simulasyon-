@@ -1,0 +1,45 @@
+name: BORU live paper simulation
+on:
+  push:
+    branches: [main]
+    paths: [boru.py, test_boru.py, '.github/workflows/simulation.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: boru-live-paper
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test accounting and execution safeguards
+        run: python -m unittest -v
+      - name: Verify live Paribu data with three observations
+        run: python -u boru.py --directory data --cycles 3 --interval 15 --require-data
+      - uses: actions/upload-artifact@v4
+        with:
+          name: boru-initial-state
+          path: data/
+          retention-days: 7
+  simulate:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 190
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: boru-initial-state
+          path: data
+      - name: Run 180 minute live paper session
+        run: python -u boru.py --directory data --duration-minutes 180 --interval 15 --require-data
+      - name: Save simulation ledger and reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boru-session-results
+          path: data/
+          retention-days: 30

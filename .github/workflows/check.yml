@@ -1,25 +1,11 @@
-name: Paribu data check
-on: [pull_request, workflow_dispatch]
+name: Paper simulation checks
+on: [pull_request]
 permissions:
   contents: read
 jobs:
-  connectivity:
+  test:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Read official specifications
-        shell: python
-        run: |
-          import urllib.request
-          for url in [
-            "https://docs.paribu.com/api/market-data/recent-trades.md",
-            "https://docs.paribu.com/api/market-data/exchange-config.md",
-            "https://docs.paribu.com/api/streams/streams.md",
-            "https://docs.paribu.com/api/error-handling/rate-limiting.md",
-            "https://render.com/pricing.md",
-          ]:
-            print("\nURL:",url,flush=True)
-            try:
-              with urllib.request.urlopen(url,timeout=20) as r:
-                print(r.read(40000).decode("utf-8","replace"))
-            except Exception as e: print(type(e).__name__,str(e)[:200])
+      - uses: actions/checkout@v4
+      - run: python -m unittest -v
