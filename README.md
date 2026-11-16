@@ -1,7 +1,32 @@
-# BÖRÜ 3.0 — veriye dayalı sanal karar motoru
+# BÖRÜ — v3 karar motoru, altı ağ bağlantısı ve Grok ekip paketi
 
 20.000 TL sanal sermaye. Gerçek emir veya hesap anahtarı kullanılmaz. Haber, sosyal medya ve duyum işlenmez.
 Bu sürüm test aşamasındadır; kârlılık veya gelecekteki fiyat yönü için doğrulanmış tahmin iddiası yoktur.
+
+## Yeni altı ağ ve Grok paketi
+
+Bitcoin, Ethereum, Solana, BNB Smart Chain, TRON ve XRP Ledger için salt okunur
+mainnet adaptörleri eklendi. `python chains.py --output chain-data --require-all` her ağı
+ayrı sınar ve başarısızlığı gizlemeden kaydeder. `market_intel` bu verileri arka planda
+örnekler ve `chain_activity` olarak saklar. **Bu alan alış/satış yönü kanıtı değildir**;
+mevcut iki Ethereum havuzunun takas verisinden ayrı tutulur. Transfer örnekleri −%2
+altında beklemek için gereken takas teyidinin yerine geçmez.
+
+Kapsam: Bitcoin'de altı teyitli bir bloğun ilk 25 işlemi; Ethereum/BNB'de bir finalized
+bloğun başarılı üst seviye yerel coin değer aktarımları; Solana'da bir finalized slotun
+başarılı System Program transferleri; TRON'da bir solidified bloğun başarılı TRX transferleri;
+XRP'de bir validated defterdeki gerçekten teslim edilmiş yerel XRP ödemeleri.
+İşlem filtreleri coin cinsindendir ve balina kimliği değildir. BTC para üstü bilinmez.
+Her ağın bütün blokları, tokenları, DEX'leri veya şirket sahiplikleri taranmaz. Örnekler
+arasındaki taranmayan yükseklik aralığı açıkça kaydedilir; Solana'da slot atlaması da bu
+aralığa dahil olabilir. Son örneğin alınması geçmişte hiç olay kaçırılmadığını göstermez.
+
+Grok paketi: **3 mantıksal bot, 4 ajan rolü**, iki paralel analiz ve ardından karar incelemesi.
+Kurulum ve görev metinleri [grok/README.md](grok/README.md) içindedir. `grok_team.py --check`
+anahtar bulunup bulunmadığını değerini açıklamadan gösterir. İlk sürüm **ADVISORY_ONLY**;
+gerçek Grok erişimi doğrulanmadan işlem yetkisi verilmez. Grok Bot uygulamasında profil
+oluşturulması ayrıca kullanıcı hesabına giriş gerektirir. Mevcut çalışan oturum eski
+commit ile devam eder; bu kod değişikliği onu yeniden başlatmaz ve yeni simülasyon açmaz.
 
 ## Güncel kapsam
 

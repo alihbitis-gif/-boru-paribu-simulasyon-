@@ -230,12 +230,14 @@ class PublicResearch:
 class ResearchEngine:
     """Bounded background I/O cannot hold up position exits. SQLite writes stay in the caller."""
     def __init__(self,provider=None):
+        from chains import ChainMonitor
         self.provider=provider or PublicResearch()
         self.pool=concurrent.futures.ThreadPoolExecutor(max_workers=4)
         self.pending={};self.data={};self.attempted={};self.chain_data={}
+        self.chain_monitor=ChainMonitor()
 
     def step(self,markets,held,now):
-        updates=[]
+        updates=self.chain_monitor.step(now)
         for market,future in list(self.pending.items()):
             if not future.done():continue
             del self.pending[market]
@@ -260,7 +262,10 @@ class ResearchEngine:
         chain=self.chain_data if market=='eth_tl' else {'status':'UNSUPPORTED_ASSET','scope':'No verified on-chain adapter for this asset'}
         result['chain']=dict(chain)
         result['chain']['fresh']=chain.get('status')=='READY' and 0<=now-chain.get('received',0)<=180
+        # Native transfer observations never stand in for directional DEX evidence.
+        result['chain_activity']=self.chain_monitor.context(market.removesuffix('_tl').upper(),now)
         return result
 
     def close(self):
         self.pool.shutdown(wait=True,cancel_futures=True)
+        self.chain_monitor.close()
