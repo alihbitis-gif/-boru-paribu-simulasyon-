@@ -21,7 +21,8 @@ WARMUP, PARTICIPATION = 60, 0.10
 
 @dataclass(frozen=True)
 class Config:
-    version: str = "2.0"
+    version: str = "3.0"
+    hard_stop: float = -.05
     fee: float = FEE
     fee_source: str = "Paribu standard TL taker tier 1; checked 2026-11-16; user tier unverified"
     risk_per_position: float = .01
@@ -36,6 +37,8 @@ class Config:
                       self.gap_reserve, self.max_roundtrip_cost, self.breakout_buffer):
             if not math.isfinite(value) or not 0 <= value < 1:
                 raise ValueError("Invalid configuration fraction")
+        if not -.20 <= self.hard_stop <= -.02:
+            raise ValueError("Hard stop must be between -20% and -2%")
         if not 0 < self.risk_per_position <= self.portfolio_risk or self.max_positions < 1:
             raise ValueError("Invalid risk limits")
 
@@ -48,7 +51,7 @@ def validate_tickers(data):
         try:
             market = item["market"]
             if market.endswith("_tl"):
-                result[market] = {"volume_24h_tl": positive(item["pair_volume"]),
+                result[market] = {"volume_24h_tl": nonnegative(item["pair_volume"]),
                                   "last": positive(item["last"])}
         except (KeyError, TypeError, ValueError, AttributeError):
             continue
@@ -59,6 +62,12 @@ def validate_tickers(data):
 
 def utc(ts=None):
     return datetime.fromtimestamp(time.time() if ts is None else ts, timezone.utc).isoformat()
+
+
+def nonnegative(value):
+    x=float(value)
+    if not math.isfinite(x) or x<0:raise ValueError("Invalid nonnegative market value")
+    return x
 
 
 def positive(value):
@@ -199,6 +208,11 @@ class Simulation:
             CREATE TABLE IF NOT EXISTS used_books (market TEXT,timestamp REAL,PRIMARY KEY(market,timestamp));
             CREATE TABLE IF NOT EXISTS exit_intents (market TEXT PRIMARY KEY,reason TEXT);
             CREATE TABLE IF NOT EXISTS shadow_signals (ts REAL,market TEXT,v1 TEXT,v2 TEXT);
+            CREATE TABLE IF NOT EXISTS research_snapshots (ts REAL,market TEXT,payload TEXT);
+            CREATE TABLE IF NOT EXISTS candles (market TEXT,venue TEXT,interval TEXT,time REAL,payload TEXT,PRIMARY KEY(market,venue,interval,time));
+            CREATE TABLE IF NOT EXISTS execution_context (trade_id INTEGER PRIMARY KEY,version TEXT,payload TEXT);
+            CREATE TABLE IF NOT EXISTS position_metrics (market TEXT PRIMARY KEY,peak_return REAL);
+
 
         """)
         saved = self.db.execute("SELECT value FROM settings WHERE key='config'").fetchone()
@@ -219,8 +233,15 @@ class Simulation:
         self.feed = feed or MarketData()
         self._reported_count = 0
         self.entries_open = True
+        self.research = None
+        self.universe_count = 0
+        self._book_rotation = 0
+        if self.config.version == '3.0':
+            from market_intel import ResearchEngine
+            self.research = ResearchEngine()
 
     def close(self):
+        if getattr(self,'research',None):self.research.close()
         self.db.close()
         self.lock.close()
 
@@ -273,6 +294,8 @@ class Simulation:
         cur = self.db.execute("INSERT INTO trades VALUES(NULL,?,?,?,?,?,?,?,?)", (now,market,"BUY",qty,notional/gross_qty,fee,0,json.dumps(sig)))
         self.db.execute("INSERT INTO fills VALUES(?,?,?,?,?,?,?)", (cur.lastrowid,self.config.fee,market.split('_')[0].upper(),gross_qty*self.config.fee,gross_qty,notional,book["timestamp"]))
         self.db.execute("INSERT INTO used_books VALUES(?,?)", (market,book["timestamp"]))
+        self.db.execute("INSERT OR REPLACE INTO position_metrics VALUES(?,-1)",(market,))
+        self.db.execute("INSERT INTO execution_context VALUES(?,?,?)", (cur.lastrowid,self.config.version,json.dumps(dict(sig,config=asdict(self.config)))))
         self.decision(now,market,"BUY","CONFIRMED_SIGNAL",budget=budget,cost=notional,roundtrip_cost=drag,signal=sig)
         return True
 
@@ -288,22 +311,37 @@ class Simulation:
         allocated,net = cost*filled/qty,gross*(1-self.config.fee)
         change = net/allocated-1
         intent = self.db.execute("SELECT reason FROM exit_intents WHERE market=?", (market,)).fetchone()
-        if not intent and STOP < change < TARGET:
-            self.decision(now,market,"HOLD","BETWEEN_THRESHOLDS",net_return=change,fillable_qty=filled)
-            return
-        reason = "STOP" if intent or change <= STOP else "TARGET"
-        if reason == "STOP":
-            self.db.execute("INSERT OR IGNORE INTO exit_intents VALUES(?,'STOP')", (market,))
+        context={}
+        if self.config.version=='3.0':
+            from strategy import exit_decision,compact
+            context=compact(self.research.context(market,now))
+            peak_row=self.db.execute("SELECT peak_return FROM position_metrics WHERE market=?",(market,)).fetchone()
+            peak=max(peak_row[0] if peak_row else -1,change)
+            self.db.execute("INSERT OR REPLACE INTO position_metrics VALUES(?,?)",(market,peak))
+            should_exit,reason=exit_decision(change,peak,context,self.config.hard_stop)
+            if intent:should_exit,reason=True,intent[0]
+            self.decision(now,market,'EXIT_REVIEW',reason,net_return=change,peak_return=peak,research=context)
+            if not should_exit:return
+            self.db.execute("INSERT OR IGNORE INTO exit_intents VALUES(?,?)",(market,reason))
+        else:
+            if not intent and STOP < change < TARGET:
+                self.decision(now,market,"HOLD","BETWEEN_THRESHOLDS",net_return=change,fillable_qty=filled)
+                return
+            reason = "STOP" if intent or change <= STOP else "TARGET"
+            if reason == "STOP":
+                self.db.execute("INSERT OR IGNORE INTO exit_intents VALUES(?,'STOP')", (market,))
         pnl = net-allocated
         self.db.execute("UPDATE account SET cash=cash+?,realized=realized+? WHERE id=1",(net,pnl))
         if filled >= qty-1e-12:
             self.db.execute("DELETE FROM positions WHERE market=?",(market,))
             self.db.execute("DELETE FROM exit_intents WHERE market=?",(market,))
+            self.db.execute("DELETE FROM position_metrics WHERE market=?",(market,))
         else:
             self.db.execute("UPDATE positions SET qty=qty-?,cost=cost-? WHERE market=?",(filled,allocated,market))
         cur = self.db.execute("INSERT INTO trades VALUES(NULL,?,?,?,?,?,?,?,?)", (now,market,"SELL",filled,gross/filled,gross*self.config.fee,pnl,reason))
         self.db.execute("INSERT INTO fills VALUES(?,?,?,?,?,?,?)", (cur.lastrowid,self.config.fee,"TL",gross*self.config.fee,filled,gross,book["timestamp"]))
         self.db.execute("INSERT INTO used_books VALUES(?,?)", (market,book["timestamp"]))
+        self.db.execute("INSERT INTO execution_context VALUES(?,?,?)",(cur.lastrowid,self.config.version,json.dumps({'decision':reason,'research':context,'config':asdict(self.config)})))
         self.decision(now,market,"SELL",reason,net_return=change,pnl=pnl,partial=filled<qty-1e-12)
 
     def closed_bars(self, market, now):
@@ -311,6 +349,21 @@ class Simulation:
         return [dict(zip(("minute","high","low","close","samples"),row)) for row in reversed(rows)]
 
     def confirmed_signal(self, market, book, now):
+        if self.config.version=='3.0':
+            from strategy import entry_decision,compact
+            context=self.research.context(market,now)
+            recent=self.db.execute("SELECT last FROM ticker_observations WHERE market=? AND received>=? ORDER BY received",(market,now-120)).fetchall()
+            rebound=len(recent)>=2 and recent[-1][0]>min(r[0] for r in recent[:-1]) and book['bids'][0][0]>=recent[-1][0]*.997
+            accepted,reason=entry_decision(context,rebound)
+            if not accepted:return None,reason
+            # Reject grossly inconsistent cross-venue asset/quote mapping.
+            usdt=self.db.execute("SELECT last FROM ticker_observations WHERE market='usdt_tl' AND received>=? ORDER BY received DESC LIMIT 1",(now-30,)).fetchone()
+            price=context['metrics']['last_closed_price']
+            if not usdt or not .8 <= recent[-1][0]/(price*usdt[0]) <= 1.2:
+                return None,'CROSS_VENUE_PRICE_UNCONFIRMED'
+            metrics=context['metrics']
+            return {'score':max(.001,metrics['return_1h']+metrics['return_24h'])/max(.001,metrics['atr_fraction']),
+                    'decision':reason,'research':compact(context),'local_rebound':rebound},reason
         bars = self.closed_bars(market, now)
         if not bars or bars[-1]["minute"] != int(now//60)*60-60 or not valid_history(bars):
             return None, "WARMUP_OR_GAP"
@@ -361,7 +414,7 @@ class Simulation:
             return
         # Risk is a sizing assumption, not a guarantee that a stop will fill.
         risk_base = min(CAPITAL,valuation)
-        stress = abs(STOP)+self.config.gap_reserve
+        stress = abs(self.config.hard_stop if self.config.version=="3.0" else STOP)+self.config.gap_reserve
         used_risk = sum(p[2]*stress for p in positions)
         remaining = max(0,risk_base*self.config.portfolio_risk-used_risk)
         chosen = sorted(candidates,key=lambda x:(-x[1]["score"],x[0]))
@@ -386,12 +439,25 @@ class Simulation:
             ticker_received = time.time()
         except Exception as exc:
             errors.append("ticker: "+type(exc).__name__+": "+str(exc)[:150])
-        eligible = sorted((m for m in tickers if tickers[m]["volume_24h_tl"] >= 5000000 and m not in ("usdt_tl","usdc_tl")),key=lambda m:tickers[m]["volume_24h_tl"],reverse=True)[:10]
-        markets = set(eligible)|{p[0] for p in self.positions()}
+        self.universe_count=len(tickers)
+        updates=[]
+        if self.config.version=='3.0':
+            eligible=sorted(tickers,key=lambda m:tickers[m]['volume_24h_tl'],reverse=True)
+            held={p[0] for p in self.positions()}
+            updates=self.research.step(eligible,held,time.time())
+            ready=[m for m in eligible if self.research.context(m,time.time()).get('fresh')]
+            ready.sort(key=lambda m:self.research.data[m]['metrics']['return_1h'],reverse=True)
+            # Every TL ticker is sampled; expensive depth is prioritised and explicitly bounded.
+            rotating=(eligible[self._book_rotation:]+eligible[:self._book_rotation])[:4]
+            self._book_rotation=(self._book_rotation+4)%max(1,len(eligible))
+            markets=held|set(ready[:6])|set(rotating)
+        else:
+            eligible = sorted((m for m in tickers if tickers[m]["volume_24h_tl"] >= 5000000 and m not in ("usdt_tl","usdc_tl")),key=lambda m:tickers[m]["volume_24h_tl"],reverse=True)[:10]
+            markets = set(eligible)|{p[0] for p in self.positions()}
         if "btc_tl" in tickers:
             markets.add("btc_tl")
         books = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
             futures = {pool.submit(self.feed.book,m):m for m in markets}
             for future in concurrent.futures.as_completed(futures):
                 market = futures[future]
@@ -408,6 +474,13 @@ class Simulation:
                 del books[market]
                 errors.append(market+": expired during fetch")
         with self.db:
+            if self.research:
+                from strategy import compact
+                for market,payload in updates:
+                    self.db.execute("INSERT INTO research_snapshots VALUES(?,?,?)",(now,market,json.dumps(compact(payload))))
+                    for interval,key in [('1h','hours'),('1d','days')]:
+                        for candle in payload.get(key,[]):
+                            self.db.execute("INSERT OR IGNORE INTO candles VALUES(?,?,?,?,?)",(market,payload['venue'],interval,candle['time'],json.dumps(candle)))
             for market,ticker in tickers.items():
                 self.db.execute("INSERT OR IGNORE INTO ticker_observations VALUES(?,?,?,?)", (market,ticker_received,ticker["last"],ticker["volume_24h_tl"]))
             for market,book in books.items():
@@ -435,7 +508,8 @@ class Simulation:
                         reason = "SPREAD_TOO_WIDE"
                     else:
                         sig,reason = self.confirmed_signal(market,books[market],now)
-                self.db.execute("INSERT INTO shadow_signals VALUES(?,?,?,?)", (now,market,json.dumps(self.legacy_signal(market,now)),json.dumps(sig)))
+                if self.config.version!='3.0':
+                    self.db.execute("INSERT INTO shadow_signals VALUES(?,?,?,?)", (now,market,json.dumps(self.legacy_signal(market,now)),json.dumps(sig)))
                 if sig:
                     candidates.append((market,sig))
                 else:
@@ -476,8 +550,10 @@ class Simulation:
             positions.append({"market":market,"quantity":qty,"cost_tl":round(cost,2),"estimated_net_sale_tl":round(net,2) if net is not None else None})
         cash = self.cash()
         equity = cash+value if complete else None
-        counts = {m:len(self.closed_bars(m,now)) for m in eligible}
-        ready = any(valid_history(self.closed_bars(m,now)) for m in eligible)
+        counts = {m:len(self.closed_bars(m,now)) for m in eligible} if not self.research else {}
+        ready = any(self.research.context(m,now).get('fresh') for m in eligible) if self.research else any(valid_history(self.closed_bars(m,now)) for m in eligible)
+        coverage={m:{'status':self.research.context(m,now).get('status'),'fresh':self.research.context(m,now).get('fresh'),
+                      'identity_verified':self.research.context(m,now).get('identity_verified',False)} for m in eligible} if self.research else {}
         return {"mode":"PAPER_ONLY","timestamp_utc":utc(now),"strategy_version":self.config.version,"entries_open":self.entries_open,
             "started_utc":self.db.execute("SELECT value FROM settings WHERE key='started'").fetchone()[0],
             "status":"DATA_ERROR" if not books else "EXIT_ONLY" if not self.entries_open else "WARMING_UP" if not ready else "MONITORING",
@@ -487,8 +563,13 @@ class Simulation:
             "realized_pnl_tl":round(self.db.execute("SELECT realized FROM account WHERE id=1").fetchone()[0],2),
             "trade_events":self.db.execute("SELECT COUNT(*) FROM trades").fetchone()[0],
             "positions":positions,"valid_books":len(books),"closed_bid_quote_minutes":counts,
-            "required_consecutive_minutes":WARMUP,"assumed_fee_each_side":self.config.fee,"config":asdict(self.config),
-            "stop_net_return":STOP,"target_net_return":TARGET,"errors":errors}
+            "required_consecutive_minutes":None if self.research else WARMUP,"assumed_fee_each_side":self.config.fee,"config":asdict(self.config),
+            "stop_net_return":STOP,"target_net_return":TARGET,"errors":errors,
+            "threshold_mode":"REVIEW_POINTS" if self.research else "FIXED_EXITS",
+            "hard_stop_net_return":self.config.hard_stop if self.research else STOP,
+            "monitored_tl_markets":self.universe_count,"research_coverage":coverage,
+            "chain_coverage":self.research.chain_data if self.research else None,
+            "company_wallet_coverage":"NOT_VERIFIED","global_coverage":"PARTIAL_PUBLIC_DATA"}
 
 
 def session_phase(now, entry_deadline, monitor_deadline, has_positions):

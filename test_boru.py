@@ -12,7 +12,7 @@ def book(bid=99.9,ask=100,now=1000,quantity=100000):
 class PaperTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.sim = Simulation(self.tmp.name)
+        self.sim = Simulation(self.tmp.name,config=Config(version="2.0"))
 
     def tearDown(self):
         self.sim.close()
@@ -71,7 +71,7 @@ class PaperTests(unittest.TestCase):
         self.sim.buy("btc_tl",book(),5000,1000,{})
         self.sim.db.commit()
         self.sim.close()
-        self.sim = Simulation(self.tmp.name)
+        self.sim = Simulation(self.tmp.name,config=Config(version="2.0"))
         other = self.sim
         self.assertAlmostEqual(other.cash(),15000)
         self.assertEqual(len(other.positions()),1)
@@ -172,13 +172,13 @@ class PaperTests(unittest.TestCase):
     def test_duplicate_process_is_rejected(self):
         self.sim.db.commit()
         with self.assertRaisesRegex(RuntimeError,"Another simulation"):
-            Simulation(self.tmp.name)
+            Simulation(self.tmp.name,config=Config(version="2.0"))
 
     def test_config_cannot_silently_reprice_existing_session(self):
         self.sim.close()
         with self.assertRaisesRegex(ValueError,"immutable"):
-            Simulation(self.tmp.name,config=Config(fee=.0035))
-        self.sim=Simulation(self.tmp.name)
+            Simulation(self.tmp.name,config=Config(version="2.0",fee=.0035))
+        self.sim=Simulation(self.tmp.name,config=Config(version="2.0"))
         self.assertEqual(self.sim.config.fee,FEE)
 
     def test_ticker_parser_and_public_endpoint_allowlist(self):

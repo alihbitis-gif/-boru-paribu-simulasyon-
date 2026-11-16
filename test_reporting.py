@@ -2,7 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from boru import Simulation,FEE
+from boru import Simulation,Config,FEE
 from test_boru import book
 from reporting import generate,records
 
@@ -10,7 +10,7 @@ from reporting import generate,records
 class ReportTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory()
-        self.sim=Simulation(self.tmp.name)
+        self.sim=Simulation(self.tmp.name,config=Config(version="2.0"))
 
     def tearDown(self):
         self.sim.close()
