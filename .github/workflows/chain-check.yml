@@ -1,0 +1,24 @@
+name: Six-chain read-only checks
+on:
+  pull_request:
+    paths: ['chains.py', 'test_chains.py', 'grok_team.py', 'test_grok_team.py', 'grok/**', '.github/workflows/chain-check.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test chain parsers and agent boundaries
+        run: python -m unittest -v test_chains test_grok_team
+      - name: Probe six mainnets without an account or orders
+        run: python chains.py --output chain-data --require-all
+      - name: Save honest per-chain coverage including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boru-six-chain-coverage
+          path: chain-data/
+          retention-days: 30
