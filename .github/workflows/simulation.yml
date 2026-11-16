@@ -1,7 +1,7 @@
 name: BORU live paper simulation
 on:
-  push:
-    branches: [main]
+  pull_request:
+    types: [synchronize]
     paths: [boru.py, test_boru.py, '.github/workflows/simulation.yml']
   workflow_dispatch:
 permissions:
